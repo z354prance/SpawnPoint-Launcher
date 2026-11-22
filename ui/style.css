@@ -1,0 +1,58 @@
+:root {
+  color-scheme: dark;
+  --bg: #121418; --side: #171A1F; --card: #1C2027; --line: #2A2F38;
+  --ink: #E9ECF1; --mute: #8B93A1; --acc: #FF9D4A; --acc-ink: #1B1206; --ok: #4ADE80; --bad: #F87171;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { display: grid; grid-template-columns: 240px 1fr; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none; }
+aside { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 18px 12px; gap: 8px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15px; padding: 0 6px 14px; }
+.brand img { width: 26px; height: 26px; }
+nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow: auto; }
+nav button { all: unset; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 9px; cursor: pointer; color: var(--mute); }
+nav button:hover { background: #20242B; color: var(--ink); }
+nav button[aria-current="true"] { background: #252A33; color: var(--ink); }
+nav button:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #3A404B; flex: none; }
+.dot.on { background: var(--ok); }
+nav .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button { font: inherit; cursor: pointer; }
+button.quiet { background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; }
+button.quiet:hover { background: #20242B; }
+button.link { background: none; border: 0; color: var(--mute); padding: 4px 6px; text-align: left; font-size: 13px; }
+button.link:hover { color: var(--ink); }
+main { padding: 44px 48px; overflow: auto; display: flex; flex-direction: column; }
+h1 { font-size: 34px; line-height: 1.1; margin: 0 0 8px; letter-spacing: -0.015em; }
+.addr { display: inline-flex; gap: 8px; align-items: center; color: var(--mute); font: 14px ui-monospace, "Cascadia Mono", Menlo, monospace; }
+.addr button { font: 12px system-ui, sans-serif; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 28px 0 36px; }
+.fact b { display: block; font-size: 15px; font-weight: 600; }
+.fact span { color: var(--mute); font-size: 12.5px; }
+.status.on b { color: var(--ok); }
+.play { align-self: flex-start; background: var(--acc); color: var(--acc-ink); border: 0; border-radius: 14px;
+  font-size: 22px; font-weight: 700; padding: 18px 64px; letter-spacing: 0.01em; box-shadow: 0 6px 24px rgba(255,157,74,.18); }
+.play:hover { filter: brightness(1.06); }
+.play:disabled { filter: grayscale(.5) brightness(.8); cursor: default; }
+.prog { margin-top: 18px; max-width: 420px; min-height: 44px; }
+.prog .lbl { color: var(--mute); font-size: 13px; margin-bottom: 6px; }
+.bar { height: 6px; background: #262B33; border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--acc); transition: width .2s; }
+.bar.busy i { width: 30%; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .bar.busy i { animation: none; width: 100%; opacity: .5; } }
+.note { color: var(--mute); font-size: 13px; max-width: 560px; }
+.err { color: var(--bad); }
+.foot { margin-top: auto; padding-top: 32px; display: flex; gap: 14px; }
+.empty { margin: auto; max-width: 460px; text-align: left; }
+.empty h1 { font-size: 28px; }
+.empty p { color: var(--mute); }
+.field { display: flex; gap: 8px; margin-top: 18px; }
+input { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); padding: 11px 12px; font: 14px ui-monospace, Menlo, monospace; user-select: text; }
+button.go { background: var(--acc); color: var(--acc-ink); border: 0; border-radius: 10px; padding: 0 18px; font-weight: 650; }
+.toast { position: fixed; right: 18px; bottom: 18px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; max-width: 360px; }
+dialog { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; max-width: 400px; }
+dialog::backdrop { background: rgba(0,0,0,.5); }
+dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+dialog .go { padding: 8px 16px; }
