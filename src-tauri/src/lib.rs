@@ -236,19 +236,41 @@ fn instance_id(s: &Server) -> String {
     format!("spawnpoint-{}", s.id.chars().take(12).collect::<String>())
 }
 
+/// Unpacks only the instance's version files (which Minecraft and loader) from the server's
+/// setup, leaving the game folder alone.
+fn refresh_version_files(zipfile: &Path, dir: &Path) -> Res<()> {
+    let f = std::fs::File::open(zipfile).map_err(|e| e.to_string())?;
+    let mut z = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
+    for name in ["mmc-pack.json", "instance.cfg"] {
+        let mut entry = z.by_name(name).map_err(|e| format!("The server's setup has no {name}: {e}"))?;
+        let mut out = std::fs::File::create(dir.join(name)).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Sets up the server's instance the first time, and on every later Play refreshes which
+/// Minecraft and loader version it uses (a pack update can change them). Mods are brought
+/// up to date by the instance itself, before each launch.
 async fn ensure_instance(app: &AppHandle, s: &Server) -> Res<String> {
     let inst = instance_id(s);
     let dir = prism_data_dir(app)?.join("instances").join(&inst);
-    if dir.join("instance.cfg").exists() {
-        return Ok(inst); // mods are brought up to date by the instance itself, before each launch
-    }
+    let have = dir.join("instance.cfg").exists();
     let tmp = data_dir(app)?.join(format!("{inst}.zip"));
-    download(app, &s.id, "Getting the server's setup", &format!("{}/prism.zip", s.page), &tmp).await?;
-    let r = unzip(&tmp, &dir);
+    let got = download(app, &s.id, "Getting the server's setup", &format!("{}/prism.zip", s.page), &tmp).await;
+    let r = match (got, have) {
+        (Err(e), false) => Err(e),
+        (Err(_), true) => Ok(()),                       // offline or the page is down: play with what's there
+        (Ok(()), false) => {
+            let r = unzip(&tmp, &dir);
+            if r.is_err() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            r
+        }
+        (Ok(()), true) => refresh_version_files(&tmp, &dir),
+    };
     let _ = std::fs::remove_file(&tmp);
-    if r.is_err() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
     r.map(|_| inst)
 }
 
