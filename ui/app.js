@@ -39,7 +39,7 @@ function drawList() {
 function drawAdd() {
   $("main").innerHTML = `<div class="empty">
     <h1>${servers.length ? "Add a server" : "Welcome"}</h1>
-    <p>Paste the link the server's owner gave you. It looks like <span class="addr">https://…/p/…</span></p>
+    <p>On the server's download page, press <b>Add to the SpawnPoint app</b>. Or paste the page's link here.</p>
     <form class="field" id="addform"><input id="link" placeholder="Server link" aria-label="Server link" autocomplete="off" spellcheck="false" autofocus>
     <button class="go" type="submit">Add</button></form>
     <p class="note" id="adderr"></p>
@@ -120,6 +120,12 @@ T.event.listen("progress", ({ payload: p }) => {
 });
 
 T.event.listen("warning", ({ payload }) => toast(String(payload), true));
+// Added from a server's download page ("Add to the SpawnPoint app")
+T.event.listen("added", async ({ payload: s }) => {
+  servers = await call("list_servers");
+  select(s.id);
+  toast(`Added ${s.name}. Press Play to join.`);
+});
 
 $("addbtn").onclick = () => { current = null; render(); };
 $("prismbtn").onclick = () => call("open_prism").catch((e) => toast(String(e), true));

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tokio::io::AsyncWriteExt;
 
 const UA: &str = concat!("SpawnPoint-Launcher/", env!("CARGO_PKG_VERSION"), " (github.com/z354prance/SpawnPoint-Launcher)");
@@ -310,6 +311,175 @@ async fn ensure_instance(app: &AppHandle, s: &Server) -> Res<String> {
     r.map(|_| inst)
 }
 
+// ------------------------------------------------------------------ fast sync
+// The server's mods and settings, fetched in one stream instead of packwiz's one request
+// per file. The app remembers what it installed (path, checksum, size, time) in the
+// instance folder, so unchanged files aren't read again and players' own edits to config
+// files are kept, like packwiz does.
+#[derive(Deserialize)]
+struct PackFile {
+    sha256: String,
+    size: u64,
+    preserve: bool,
+}
+
+#[derive(Deserialize)]
+struct PackIndex {
+    files: std::collections::BTreeMap<String, PackFile>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Installed {
+    sha256: String,
+    size: u64,
+    mtime: u64,
+}
+
+type Manifest = std::collections::BTreeMap<String, Installed>;
+
+fn mtime(p: &Path) -> Option<(u64, u64)> {
+    let m = std::fs::metadata(p).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some((m.len(), t))
+}
+
+fn sha256_file(p: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut h = Sha256::new();
+    std::io::copy(&mut f, &mut h).ok()?;
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The file's checksum, from the remembered one when its size and time haven't changed.
+fn local_sha(p: &Path, known: Option<&Installed>) -> Option<String> {
+    let (size, t) = mtime(p)?;
+    if let Some(k) = known {
+        if k.size == size && k.mtime == t {
+            return Some(k.sha256.clone());
+        }
+    }
+    sha256_file(p)
+}
+
+/// Only plain relative paths inside the game folder.
+fn safe_rel(rel: &str) -> bool {
+    !rel.is_empty() && !rel.starts_with('/') && !rel.contains('\\') && !rel.contains(':')
+        && rel.split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
+async fn sync_pack(app: &AppHandle, s: &Server, inst_dir: &Path) -> Res<()> {
+    let mc = inst_dir.join(".minecraft");
+    let man_path = inst_dir.join("spawnpoint-files.json");
+    let manifest: Manifest = std::fs::read(&man_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let _ = app.emit("progress", Progress { id: &s.id, label: "Checking for mod updates".into(), done: 0, total: None });
+    let idx: PackIndex = client().get(format!("{}/sync", s.page)).send().await
+        .map_err(|e| format!("Couldn't reach the server's page: {e}"))?
+        .error_for_status().map_err(|e| format!("The server's page answered {}", e.status().map(|c| c.to_string()).unwrap_or_default()))?
+        .json().await.map_err(|e| format!("The server's file list was unreadable: {e}"))?;
+
+    // Work out what's missing or changed (reading files is slow-ish: do it off the window's thread).
+    let mc2 = mc.clone();
+    let (need, remove, mut keep) = tokio::task::spawn_blocking(move || {
+        let mut need = vec![];
+        let mut keep = Manifest::new();
+        for (rel, f) in &idx.files {
+            if !safe_rel(rel) {
+                continue;
+            }
+            let path = mc2.join(rel);
+            let known = manifest.get(rel);
+            match local_sha(&path, known) {
+                Some(h) if h == f.sha256 => {
+                    if let Some((size, t)) = mtime(&path) {
+                        keep.insert(rel.clone(), Installed { sha256: h, size, mtime: t });
+                    }
+                }
+                // A setting the player changed themselves stays theirs (packwiz's "preserve").
+                Some(h) if f.preserve && known.map(|k| k.sha256 != h).unwrap_or(true) => {}
+                _ => need.push((rel.clone(), f.size)),
+            }
+        }
+        // Files the app installed that the server no longer has, unless the player changed them.
+        let remove: Vec<String> = manifest.iter()
+            .filter(|(rel, k)| !idx.files.contains_key(*rel) && safe_rel(rel)
+                    && local_sha(&mc2.join(rel), Some(k)).map(|h| h == k.sha256).unwrap_or(false))
+            .map(|(rel, _)| rel.clone()).collect();
+        (need, remove, keep)
+    }).await.map_err(|e| e.to_string())?;
+
+    for rel in &remove {
+        let _ = std::fs::remove_file(mc.join(rel));
+    }
+    if !need.is_empty() {
+        let total: u64 = need.iter().map(|(_, n)| n).sum();
+        let label = format!("Downloading {} file{} from the server", need.len(), if need.len() == 1 { "" } else { "s" });
+        let r = client().post(format!("{}/sync", s.page))
+            .json(&serde_json::json!({ "files": need.iter().map(|(r, _)| r).collect::<Vec<_>>() }))
+            .send().await.map_err(|e| format!("{label}: {e}"))?;
+        if !r.status().is_success() {
+            return Err(format!("{label}: the server answered {}", r.status()));
+        }
+        let tmp = inst_dir.join("spawnpoint-download.tar");
+        let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
+        let mut body = r.bytes_stream();
+        let (mut done, mut last) = (0u64, 0u64);
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|e| format!("{label}: {e}"))?;
+            f.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            done += chunk.len() as u64;
+            if done - last > 1024 * 1024 {
+                last = done;
+                let _ = app.emit("progress", Progress { id: &s.id, label: label.clone(), done, total: Some(total) });
+            }
+        }
+        f.flush().await.map_err(|e| e.to_string())?;
+        drop(f);
+        let _ = app.emit("progress", Progress { id: &s.id, label: "Putting the files in place".into(), done: 0, total: None });
+        let wanted: std::collections::HashSet<String> = need.into_iter().map(|(r, _)| r).collect();
+        let (mc3, tmp2) = (mc.clone(), tmp.clone());
+        let written = tokio::task::spawn_blocking(move || -> Res<Manifest> {
+            let mut out = Manifest::new();
+            let mut ar = tar::Archive::new(std::fs::File::open(&tmp2).map_err(|e| e.to_string())?);
+            for entry in ar.entries().map_err(|e| e.to_string())? {
+                let mut entry = entry.map_err(|e| format!("The download was cut short: {e}"))?;
+                let rel = entry.path().map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
+                if !wanted.contains(&rel) || !safe_rel(&rel) {
+                    continue;
+                }
+                let dst = mc3.join(&rel);
+                if let Some(dir) = dst.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                }
+                let part = dst.with_extension("spawnpoint-part");
+                let mut w = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+                std::io::copy(&mut entry, &mut w).map_err(|e| e.to_string())?;
+                drop(w);
+                std::fs::rename(&part, &dst).map_err(|e| e.to_string())?;
+                if let (Some(h), Some((size, t))) = (sha256_file(&dst), mtime(&dst)) {
+                    out.insert(rel, Installed { sha256: h, size, mtime: t });
+                }
+            }
+            Ok(out)
+        }).await.map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&tmp);
+        keep.extend(written?);
+    }
+    let _ = std::fs::write(&man_path, serde_json::to_vec(&keep).unwrap_or_default());
+    Ok(())
+}
+
+/// The app keeps the mods up to date itself, so Prism shouldn't also run packwiz.
+fn no_prelaunch(dir: &Path) {
+    let p = dir.join("instance.cfg");
+    if let Ok(text) = std::fs::read_to_string(&p) {
+        let lines: Vec<String> = text.lines().filter(|l| !l.starts_with("PreLaunchCommand="))
+            .map(|l| if l.starts_with("OverrideCommands=") { "OverrideCommands=false".into() } else { l.to_string() })
+            .collect();
+        let _ = std::fs::write(&p, lines.join("\n") + "\n");
+    }
+}
+
 // ------------------------------------------------------------------ commands for the window
 #[tauri::command]
 fn list_servers(app: AppHandle) -> Res<Vec<Server>> {
@@ -357,6 +527,14 @@ async fn play(app: AppHandle, id: String) -> Res<()> {
     let s = load(&app)?.into_iter().find(|x| x.id == id).ok_or("Unknown server")?;
     let exe = ensure_prism(&app, &s.id).await?;
     let inst = ensure_instance(&app, &s).await?;
+    let dir = prism_data_dir(&app)?.join("instances").join(&inst);
+    no_prelaunch(&dir);
+    if let Err(e) = sync_pack(&app, &s, &dir).await {
+        if !dir.join("spawnpoint-files.json").exists() {
+            return Err(e);                                    // nothing installed yet: can't play
+        }
+        let _ = app.emit("warning", format!("Couldn't check for mod updates, so the game starts with the mods you have. ({e})"));
+    }
     let _ = app.emit("progress", Progress { id: &s.id, label: "Starting Minecraft".into(), done: 0, total: None });
     Command::new(&exe)
         .arg("--dir").arg(prism_data_dir(&app)?)
@@ -398,9 +576,58 @@ fn reset_instance(app: AppHandle, id: String) -> Res<()> {
     Ok(())
 }
 
+/// spawnpoint://add?link=<player pack link>, from the "Add to the SpawnPoint app" button on
+/// a server's download page: adds the server and shows it.
+fn open_links(app: &AppHandle, urls: Vec<tauri::Url>) {
+    for u in urls {
+        if u.scheme() != "spawnpoint" {
+            continue;
+        }
+        let link = u.query_pairs().find(|(k, _)| k == "link").map(|(_, v)| v.into_owned());
+        if let Some(link) = link {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                match add_server(app.clone(), link).await {
+                    Ok(s) => { let _ = app.emit("added", s); }
+                    Err(e) => { let _ = app.emit("warning", format!("Couldn't add that server: {e}")); }
+                }
+            });
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // One copy of the app: a link clicked while it's open goes to the open window.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .setup(|app| {
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                let _ = app.deep_link().register_all();         // also works for portable copies
+            }
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |e| open_links(&handle, e.urls()));
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                let handle = app.handle().clone();
+                // after the window has loaded, so it hears about the new server
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    open_links(&handle, urls);
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_servers, add_server, remove_server, server_info, setup_state, play, open_prism, reset_instance
         ])
@@ -432,6 +659,25 @@ mod tests {
         assert!(!m.contains("-jar old"));
         assert!(m.contains("OverrideCommands=true"));
         assert_eq!(m.matches("[General]").count(), 1);
+    }
+
+    #[test]
+    fn only_safe_paths() {
+        assert!(safe_rel("mods/create.jar") && safe_rel("config/jei/jei.toml"));
+        for bad in ["../x", "/etc/passwd", "mods/../../x", "C:/x", "a\\b", "", "mods//x", "./x"] {
+            assert!(!safe_rel(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn prelaunch_removed() {
+        let d = std::env::temp_dir().join(format!("sp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("instance.cfg"), "[General]\nOverrideCommands=true\nPreLaunchCommand=\"x\"\nname=a\n").unwrap();
+        no_prelaunch(&d);
+        let t = std::fs::read_to_string(d.join("instance.cfg")).unwrap();
+        assert!(t.contains("OverrideCommands=false") && !t.contains("PreLaunchCommand") && t.contains("name=a"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

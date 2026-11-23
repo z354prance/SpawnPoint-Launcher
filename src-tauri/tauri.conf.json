@@ -3,11 +3,20 @@
   "productName": "SpawnPoint",
   "version": "0.1.0",
   "identifier": "io.github.z354prance.spawnpoint-launcher",
-  "build": { "frontendDist": "../ui" },
+  "build": {
+    "frontendDist": "../ui"
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "SpawnPoint", "width": 920, "height": 600, "minWidth": 720, "minHeight": 480, "backgroundColor": "#121418" }
+      {
+        "title": "SpawnPoint",
+        "width": 920,
+        "height": 600,
+        "minWidth": 720,
+        "minHeight": 480,
+        "backgroundColor": "#121418"
+      }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' https://mc-heads.net data:; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
@@ -15,10 +24,34 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "appimage", "deb", "dmg"],
+    "targets": [
+      "nsis",
+      "appimage",
+      "deb",
+      "dmg"
+    ],
     "category": "Game",
     "shortDescription": "Play on SpawnPoint servers in one click",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-    "windows": { "nsis": { "installMode": "currentUser" } }
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "spawnpoint"
+        ]
+      }
+    }
   }
 }
