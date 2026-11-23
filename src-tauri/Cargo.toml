@@ -1,6 +1,6 @@
 [package]
 name = "spawnpoint-launcher"
-version = "0.2.1"
+version = "0.2.2"
 description = "Play on SpawnPoint servers in one click"
 edition = "2021"
 publish = false

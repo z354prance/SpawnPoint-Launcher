@@ -389,7 +389,7 @@ async fn sync_pack(app: &AppHandle, s: &Server, inst_dir: &Path) -> Res<()> {
                 return Err("The server is still getting the modpack's files ready. Try again later.".into());
             }
             let (done, total) = (p["done"].as_u64().unwrap_or(0), p["total"].as_u64().filter(|t| *t > 0));
-            let _ = app.emit("progress", Progress { id: &s.id, label: "The server is getting the modpack ready (first time only)".into(), done, total });
+            let _ = app.emit("progress", Progress { id: &s.id, label: "The server is getting this version of the modpack ready".into(), done, total });
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
             continue;
         }
