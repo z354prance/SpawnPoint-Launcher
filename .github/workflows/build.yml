@@ -49,6 +49,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Unsigned prototype build." --prerelease
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Unsigned build: Windows and macOS warn that the developer is unknown."
           shopt -s nullglob
           gh release upload "$GITHUB_REF_NAME" src-tauri/target/release/bundle/{nsis/*.exe,appimage/*.AppImage,deb/*.deb,dmg/*.dmg} --clobber
