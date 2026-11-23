@@ -260,7 +260,11 @@ async fn ensure_instance(app: &AppHandle, s: &Server) -> Res<String> {
     let got = download(app, &s.id, "Getting the server's setup", &format!("{}/prism.zip", s.page), &tmp).await;
     let r = match (got, have) {
         (Err(e), false) => Err(e),
-        (Err(_), true) => Ok(()),                       // offline or the page is down: play with what's there
+        (Err(e), true) => {
+            // Offline or the page is down: play with what's there, but say so.
+            let _ = app.emit("warning", format!("Couldn't get the server's latest setup, so the game starts with the one you have. ({e})"));
+            Ok(())
+        }
         (Ok(()), false) => {
             let r = unzip(&tmp, &dir);
             if r.is_err() {
@@ -268,7 +272,7 @@ async fn ensure_instance(app: &AppHandle, s: &Server) -> Res<String> {
             }
             r
         }
-        (Ok(()), true) => refresh_version_files(&tmp, &dir),
+        (Ok(()), true) => refresh_version_files(&tmp, &dir).map_err(|e| format!("Couldn't update the server's setup: {e}")),
     };
     let _ = std::fs::remove_file(&tmp);
     r.map(|_| inst)

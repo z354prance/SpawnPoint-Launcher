@@ -15,7 +15,8 @@ let pollTimer = null;
 function toast(msg, bad) {
   const t = $("toast");
   t.textContent = msg; t.className = "toast" + (bad ? " err" : ""); t.hidden = false;
-  clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), 5000);
+  clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), bad ? 20000 : 5000);
+  t.onclick = () => (t.hidden = true);
 }
 
 // A yes/no question inside the window (the webview's own confirm() differs by system).
@@ -117,6 +118,8 @@ T.event.listen("progress", ({ payload: p }) => {
   busy[p.id] = p;
   if (p.id === current) drawServer();
 });
+
+T.event.listen("warning", ({ payload }) => toast(String(payload), true));
 
 $("addbtn").onclick = () => { current = null; render(); };
 $("prismbtn").onclick = () => call("open_prism").catch((e) => toast(String(e), true));
