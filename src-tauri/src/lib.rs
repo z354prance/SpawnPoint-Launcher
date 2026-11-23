@@ -373,10 +373,29 @@ async fn sync_pack(app: &AppHandle, s: &Server, inst_dir: &Path) -> Res<()> {
     let man_path = inst_dir.join("spawnpoint-files.json");
     let manifest: Manifest = std::fs::read(&man_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let _ = app.emit("progress", Progress { id: &s.id, label: "Checking for mod updates".into(), done: 0, total: None });
-    let idx: PackIndex = client().get(format!("{}/sync", s.page)).send().await
-        .map_err(|e| format!("Couldn't reach the server's page: {e}"))?
-        .error_for_status().map_err(|e| format!("The server's page answered {}", e.status().map(|c| c.to_string()).unwrap_or_default()))?
-        .json().await.map_err(|e| format!("The server's file list was unreadable: {e}"))?;
+    // A server running a known modpack prepares that pack's player files once per version;
+    // until it's done it answers 202 with how far along it is.
+    let started = std::time::Instant::now();
+    let idx: PackIndex = loop {
+        let r = client().get(format!("{}/sync", s.page)).send().await
+            .map_err(|e| format!("Couldn't reach the server's page: {e}"))?;
+        if r.status() == reqwest::StatusCode::ACCEPTED {
+            let v: serde_json::Value = r.json().await.unwrap_or_default();
+            let p = &v["preparing"];
+            if p["state"] == "error" {
+                return Err(format!("The server couldn't get the modpack's files ready: {}", p["error"].as_str().unwrap_or("")));
+            }
+            if started.elapsed() > std::time::Duration::from_secs(45 * 60) {
+                return Err("The server is still getting the modpack's files ready. Try again later.".into());
+            }
+            let (done, total) = (p["done"].as_u64().unwrap_or(0), p["total"].as_u64().filter(|t| *t > 0));
+            let _ = app.emit("progress", Progress { id: &s.id, label: "The server is getting the modpack ready (first time only)".into(), done, total });
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            continue;
+        }
+        break r.error_for_status().map_err(|e| format!("The server's page answered {}", e.status().map(|c| c.to_string()).unwrap_or_default()))?
+            .json().await.map_err(|e| format!("The server's file list was unreadable: {e}"))?;
+    };
 
     // Work out what's missing or changed (reading files is slow-ish: do it off the window's thread).
     let mc2 = mc.clone();
