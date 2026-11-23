@@ -241,12 +241,44 @@ fn instance_id(s: &Server) -> String {
 fn refresh_version_files(zipfile: &Path, dir: &Path) -> Res<()> {
     let f = std::fs::File::open(zipfile).map_err(|e| e.to_string())?;
     let mut z = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
-    for name in ["mmc-pack.json", "instance.cfg"] {
+    let mut read = |name: &str| -> Res<String> {
         let mut entry = z.by_name(name).map_err(|e| format!("The server's setup has no {name}: {e}"))?;
-        let mut out = std::fs::File::create(dir.join(name)).map_err(|e| e.to_string())?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut text).map_err(|e| e.to_string())?;
+        Ok(text)
+    };
+    let pack = read("mmc-pack.json")?;
+    let cfg = read("instance.cfg")?;
+    std::fs::write(dir.join("mmc-pack.json"), pack).map_err(|e| e.to_string())?;
+    let mine = std::fs::read_to_string(dir.join("instance.cfg")).unwrap_or_default();
+    std::fs::write(dir.join("instance.cfg"), merge_cfg(&mine, &cfg)).map_err(|e| e.to_string())
+}
+
+/// The server's settings for the instance (name, launch command) laid over Prism's own
+/// file, so what Prism keeps there (play time, window size, Java choice) stays.
+fn merge_cfg(mine: &str, server: &str) -> String {
+    let key = |l: &str| l.split_once('=').map(|(k, _)| k.trim().to_string());
+    let theirs: Vec<(String, String)> = server.lines().filter_map(|l| key(l).map(|k| (k, l.to_string()))).collect();
+    let mut out: Vec<String> = vec![];
+    let mut done = std::collections::HashSet::new();
+    for l in mine.lines() {
+        match key(l).and_then(|k| theirs.iter().find(|(tk, _)| *tk == k)) {
+            Some((k, line)) => {
+                out.push(line.clone());
+                done.insert(k.clone());
+            }
+            None => out.push(l.to_string()),
+        }
     }
-    Ok(())
+    if out.is_empty() {
+        out.push("[General]".into());
+    }
+    for (k, line) in &theirs {
+        if !done.contains(k) && k != "[General]" {
+            out.push(line.clone());
+        }
+    }
+    out.join("\n") + "\n"
 }
 
 /// Sets up the server's instance the first time, and on every later Play refreshes which
@@ -388,6 +420,18 @@ mod tests {
         assert_eq!(parse_link("https://sp.example.com/p/AbCdEf12_-/prism.zip").unwrap(), want);
         assert!(parse_link("https://sp.example.com/m/AbCdEf12").is_err());
         assert!(parse_link("https://sp.example.com/p/abc").is_err());
+    }
+
+    #[test]
+    fn merges_instance_settings() {
+        let mine = "[General]\nConfigVersion=1.2\nPreLaunchCommand=\"$INST_JAVA\" -jar old\nlastLaunchTime=123\nname=stb4\n";
+        let server = "[General]\nname=stb4\nOverrideCommands=true\nPreLaunchCommand=\"\\\"$INST_JAVA\\\" -jar new\"\n";
+        let m = merge_cfg(mine, server);
+        assert!(m.contains("lastLaunchTime=123"));
+        assert!(m.contains("PreLaunchCommand=\"\\\"$INST_JAVA\\\" -jar new\""));
+        assert!(!m.contains("-jar old"));
+        assert!(m.contains("OverrideCommands=true"));
+        assert_eq!(m.matches("[General]").count(), 1);
     }
 
     #[test]
